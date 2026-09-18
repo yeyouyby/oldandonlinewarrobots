@@ -2,6 +2,7 @@
 import { ROBOTS, WEAPONS } from '/shared/data.js';
 import { MAP } from '/shared/map.js';
 import { ABILITY_SHORT } from './hangar.js';
+import { esc } from './profile.js';
 
 const $ = (id) => document.getElementById(id);
 const TEAM_CSS = ['#42a5f5', '#ef5350'];
@@ -206,7 +207,7 @@ export class HUD {
     let html = '<tr><th>驾驶员</th><th>阵营</th><th>击杀</th><th>伤害</th><th>信标</th></tr>';
     for (const team of [myTeam, 1 - myTeam]) {
       for (const r of msg.results.filter(x => x.team === team)) {
-        html += `<tr class="t${r.team}${r.id === myId ? ' me' : ''}"><td>${r.name}${r.human ? '' : ' <small>(AI)</small>'}</td><td>${r.team === 0 ? '蓝' : '红'}</td><td>${r.kills}</td><td>${r.damage.toLocaleString()}</td><td>${r.beacons}</td></tr>`;
+        html += `<tr class="t${r.team}${r.id === myId ? ' me' : ''}"><td>${esc(r.name)}${r.human ? '' : ' <small>(AI)</small>'}</td><td>${r.team === 0 ? '蓝' : '红'}</td><td>${r.kills}</td><td>${r.damage.toLocaleString()}</td><td>${r.beacons}</td></tr>`;
       }
     }
     tbl.innerHTML = html;

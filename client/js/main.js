@@ -86,7 +86,16 @@ const G = {
 window.__G = G; // debug handle
 
 // ------------------------------------------------------------------ hangar UI
-initHangar({ preview: setPreview, onBattle: startMatchmaking });
+// The profile lives on the server; log in first (creates one on first visit), then build the hangar UI.
+(async () => {
+  try {
+    await P.init();
+  } catch (e) {
+    hud.center('无法连接服务器：' + (e.message || e), 6000, '#ff7043');
+    $('hud').classList.remove('hidden');
+  }
+  initHangar({ preview: setPreview, onBattle: startMatchmaking });
+})();
 $('btnCancel').addEventListener('click', () => leaveBattle());
 $('btnToHangar').addEventListener('click', () => leaveBattle());
 $('btnSpectate').addEventListener('click', () => hud.show('respawn', false));
@@ -101,7 +110,7 @@ function startMatchmaking() {
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
   const ws = new WebSocket(url);
   G.ws = ws;
-  ws.onopen = () => { ws.send(JSON.stringify({ t: 'join', name: P.profile.name, hangar: G.hangar })); hud.lobby('已连接，等待其他玩家加入（空位由 AI 补齐）…', G.hangar); };
+  ws.onopen = () => { ws.send(JSON.stringify({ t: 'join', token: P.token })); hud.lobby('已连接，等待其他玩家加入（空位由 AI 补齐）…', G.hangar); };
   ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onMessage(m); };
   ws.onclose = () => {
     if (G.mode === 'hangar' || G.results) return; // results screen stays until the player clicks
@@ -120,6 +129,7 @@ function onMessage(m) {
       if (m.phase === 'battle') enterBattle();
       break;
     case 's': onState(m); break;
+    case 'error': hud.lobby('服务器拒绝加入：' + (m.error || '未知错误'), G.hangar); break;
     case 'destroyed':
       G.alive = false; G.deadT = 0;
       setTimeout(() => { if (G.mode === 'battle' && !G.alive && !G.results) hud.showRespawn(G.hangar, G.used, m.left, pickRespawn); }, 1800);
@@ -127,7 +137,7 @@ function onMessage(m) {
       break;
     case 'end':
       G.results = m;
-      P.applyReward(m.reward, m.stats, m.win);
+      P.setProfile(m.profile); // server already credited the reward
       hud.show('respawn', false);
       document.exitPointerLock?.();
       hud.showResults(m, G.myId, G.myTeam);
@@ -333,15 +343,15 @@ function onEvent(ev) {
     case 'kill': {
       const pos = new THREE.Vector3(ev.x, ev.y + 2, ev.z);
       effects.bigExplosion(pos); audio.play('kill', pos);
-      const victim = playerName(ev.id), vt = playerTeam(ev.id);
-      const by = ev.by != null ? playerName(ev.by) : null;
+      const victim = P.esc(playerName(ev.id)), vt = playerTeam(ev.id);
+      const by = ev.by != null ? P.esc(playerName(ev.by)) : null;
       const rk = ROBOTS[ev.rk]?.name || '';
       const cls = ev.by === G.myId || ev.id === G.myId ? 'me' : 't' + vt;
       hud.addKill(`${by ? `<b>${by}</b> 摧毁了 ` : ''}<span style="color:${vt === 0 ? '#90caf9' : '#ef9a9a'}">${victim}</span> <small>(${rk})</small>`, cls);
       if (ev.by === G.myId) { hud.center(`击毁 ${victim} 的 ${rk}！`, 1800, '#ffd54f'); }
       break;
     }
-    case 'jump': { const p = entityPos(ev.id, V.a, 0); if (p) { effects.jumpDust(p.clone()); audio.play('jump', p); } if (ev.id === G.myId && G.pred && G.pred.y <= 0.01) startJump(G.pred, G.pred._mx || 0, G.pred._mz || 0); break; }
+    case 'jump': { const p = entityPos(ev.id, V.a, 0); if (p) { effects.jumpDust(p.clone()); audio.play('jump', p); } if (ev.id === G.myId && G.pred && G.pred.vy === 0) startJump(G.pred, G.pred._mx || 0, G.pred._mz || 0); break; }
     case 'dash': { const e = G.entities.get(ev.id); if (e) { const p = e.obj.group.position; effects.dashTrail(p.clone(), new THREE.Vector3(Math.sin(e.yaw), 0, Math.cos(e.yaw))); audio.play('dash', p); } break; }
     case 'stealth': { const p = entityPos(ev.id, V.a, 0.5); if (p) audio.play('stealth', p); if (ev.id === G.myId) hud.center('隐身启动', 1200); break; }
     case 'shieldbreak': { const p = entityPos(ev.id, V.a, 0.5); if (p) { effects.sparks(p.clone(), 'cannon', 14); } if (ev.id === G.myId) hud.center('物理盾已被击碎！', 1500, '#ffab91'); break; }
@@ -402,7 +412,7 @@ function useAbility() {
   const ab = G.pred.def.ability; const me = G.state?.me;
   if (!ab || !me) return;
   const inp = moveInput();
-  if (ab.type === 'jump' || ab.type === 'descend') { if (me.cd <= 0 && G.pred.y <= 0.01) startJump(G.pred, inp.mx, inp.mz); }
+  if (ab.type === 'jump' || ab.type === 'descend') { if (me.cd <= 0 && G.pred.vy === 0) startJump(G.pred, inp.mx, inp.mz); }
   else if (ab.type === 'dash') { if (me.ch > 0 && G.pred.dashT <= 0) startDash(G.pred, inp.mx, inp.mz); }
   audio.play('ui');
 }
@@ -566,7 +576,9 @@ function frame() {
     e.obj.group.rotation.y = yaw;
     e.obj.torso.rotation.y = angleDiff(e.ty, yaw);
     e.animT += dt * (e.animSpeed > 0.1 ? 1 : 0);
-    animateRobot(e.obj, e.animT, e.animSpeed, y > 0.05);
+    const airborne = e.id === G.myId && G.pred ? G.pred.vy !== 0 : Math.abs(y - (e.prevY ?? y)) > 0.02;
+    e.prevY = y;
+    animateRobot(e.obj, e.animT, e.animSpeed, airborne);
     // spin mg barrels
     for (const wm of e.obj.weaponMeshes) { if (!wm) continue; const sp = wm.getObjectByName('spin'); if (sp) { sp.userData.spin = Math.max(0, (sp.userData.spin || 0) - dt * 2); sp.rotation.z += sp.userData.spin * 30 * dt; } }
     // stealth

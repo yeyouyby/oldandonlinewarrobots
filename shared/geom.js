@@ -44,12 +44,26 @@ export function losClear(ax, ay, az, bx, by, bz, bounds) {
   return t < 0;
 }
 
-// Push a circle (x,z,r) out of boxes (2D). Returns new [x, z].
-export function resolveCircle(x, z, r, bounds) {
+export const STEP_EPS = 0.6;
+
+// Height of the surface under (x,z) for a robot currently at altitude y: the tallest box top
+// that the point is over and that is not above the robot (boxes above are walls, handled by resolveCircle).
+export function groundHeight(x, z, y, bounds) {
+  let g = 0;
+  for (const bb of bounds) {
+    if (bb.maxY <= g || bb.maxY > y + STEP_EPS) continue;
+    if (x >= bb.minX && x <= bb.maxX && z >= bb.minZ && z <= bb.maxZ) g = bb.maxY;
+  }
+  return g;
+}
+
+// Push a circle (x,z,r) out of boxes (2D). Boxes whose top is at/below altitude y are ignored. Returns new [x, z].
+export function resolveCircle(x, z, r, bounds, y = 0) {
   for (let iter = 0; iter < 3; iter++) {
     let moved = false;
     for (const bb of bounds) {
       if (bb.maxY < 2) continue; // very low things are walkable
+      if (bb.maxY <= y + STEP_EPS) continue; // we're above this box (jumping over / standing on it)
       const cx = Math.max(bb.minX, Math.min(x, bb.maxX));
       const cz = Math.max(bb.minZ, Math.min(z, bb.maxZ));
       let dx = x - cx, dz = z - cz;

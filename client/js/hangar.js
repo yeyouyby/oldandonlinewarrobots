@@ -29,21 +29,31 @@ export function initHangar({ preview, onBattle }) {
     onBattle();
   });
   $('btnReset').addEventListener('click', () => { if (confirm('确定重置存档？所有机甲和货币将恢复初始状态。')) P.reset(); });
+  $('btnBattle').disabled = false;
   $('btnHelp').addEventListener('click', () => $('help').classList.remove('hidden'));
   $('helpClose').addEventListener('click', () => $('help').classList.add('hidden'));
   $('modalClose').addEventListener('click', closeModal);
   $('modal').addEventListener('click', (e) => { if (e.target === $('modal')) closeModal(); });
-  $('pilotName').addEventListener('click', () => {
-    const n = prompt('输入驾驶员名称（最多 14 字符）', P.profile.name);
-    if (n && n.trim()) { P.profile.name = n.trim().slice(0, 14); P.save(); renderAll(); }
+  $('pilotName').addEventListener('click', async () => {
+    const n = prompt('输入驾驶员名称（最多 14 个字母/数字）', P.profile.name);
+    if (n && n.trim()) { await run(P.setName(n)); }
   });
   renderAll();
 }
 
+// run a server action, show error if rejected, re-render
+async function run(promise) {
+  const ok = await promise;
+  if (!ok && P.lastError) alert(P.lastError);
+  renderAll();
+  return ok;
+}
+
 export function renderAll() {
+  if (selected && !P.robotById(selected)) selected = P.profile.hangar.find(Boolean) || (P.profile.robots[0] && P.profile.robots[0].id) || null;
   $('ag').textContent = P.fmt(P.profile.ag);
   $('au').textContent = P.fmt(P.profile.au);
-  $('pilotName').textContent = P.profile.name + ' ✎';
+  $('pilotName').textContent = P.esc(P.profile.name) + ' ✎';
   renderSlots();
   renderRobotPanel();
   renderShop();
@@ -60,7 +70,7 @@ function renderSlots() {
     if (i >= P.profile.slotsUnlocked) {
       d.className = 'slot locked';
       d.innerHTML = `🔒 解锁第 ${i + 1} 槽位 · ${P.costStr(SLOT_UNLOCK_COST[i])}`;
-      if (i === P.profile.slotsUnlocked) d.addEventListener('click', () => { if (!P.unlockSlot()) alert('货币不足'); renderAll(); });
+      if (i === P.profile.slotsUnlocked) d.addEventListener('click', () => run(P.unlockSlot()));
       el.appendChild(d); continue;
     }
     const id = P.profile.hangar[i];
@@ -83,11 +93,11 @@ function renderSlots() {
 function pickRobotForSlot(i) {
   const list = P.profile.robots;
   openModal(`选择放入槽位 ${i + 1} 的机甲`, [
-    { title: '（清空槽位）', meta: '', onClick: () => { P.setHangarSlot(i, null); closeModal(); renderAll(); } },
+    { title: '（清空槽位）', meta: '', onClick: () => { closeModal(); run(P.setHangarSlot(i, null)); } },
     ...list.map(r => {
       const def = ROBOTS[r.key];
       const inSlot = P.profile.hangar.indexOf(r.id);
-      return { title: `${def.name} Lv.${r.level}`, meta: `${CLS_NAME[def.cls]} · ${Math.round(robotHp(def, r.level) / 1000)}k HP${inSlot >= 0 ? ` · 已在槽位 ${inSlot + 1}` : ''}`, onClick: () => { P.setHangarSlot(i, r.id); selected = r.id; closeModal(); renderAll(); } };
+      return { title: `${def.name} Lv.${r.level}`, meta: `${CLS_NAME[def.cls]} · ${Math.round(robotHp(def, r.level) / 1000)}k HP${inSlot >= 0 ? ` · 已在槽位 ${inSlot + 1}` : ''}`, onClick: () => { selected = r.id; closeModal(); run(P.setHangarSlot(i, r.id)); } };
     }),
   ]);
 }
@@ -130,14 +140,14 @@ function renderRobotPanel() {
     if (e.target.closest('[data-upw]')) return;
     openEquipModal(r.id, +ws.dataset.slot);
   }));
-  el.querySelectorAll('[data-upw]').forEach(b => b.addEventListener('click', () => { if (!P.upgradeWeapon(b.dataset.upw)) alert('银币不足或已满级'); renderAll(); }));
-  el.querySelector('#btnUpRobot')?.addEventListener('click', () => { if (!P.upgradeRobot(r.id)) alert('银币不足'); renderAll(); });
+  el.querySelectorAll('[data-upw]').forEach(b => b.addEventListener('click', () => run(P.upgradeWeapon(b.dataset.upw))));
+  el.querySelector('#btnUpRobot')?.addEventListener('click', () => run(P.upgradeRobot(r.id)));
   el.querySelector('#btnToSlot')?.addEventListener('click', () => {
     const empty = P.profile.hangar.findIndex((s, i) => s === null && i < P.profile.slotsUnlocked);
     if (empty < 0) { alert('机库已满，请先清空一个槽位（右键槽位）'); return; }
-    P.setHangarSlot(empty, r.id); renderAll();
+    run(P.setHangarSlot(empty, r.id));
   });
-  el.querySelector('#btnSellRobot')?.addEventListener('click', () => { if (confirm(`出售 ${def.name}？（返还 50% 银币）`)) { P.sellRobot(r.id); selected = P.profile.hangar.find(Boolean) || null; renderAll(); } });
+  el.querySelector('#btnSellRobot')?.addEventListener('click', async () => { if (confirm(`出售 ${def.name}？（返还 50% 银币）`)) { await run(P.sellRobot(r.id)); } });
 }
 
 function abilityDetail(ab) {
@@ -158,15 +168,21 @@ function abilityDetail(ab) {
 function openEquipModal(robotId, slotIdx) {
   const r = P.robotById(robotId); const st = ROBOTS[r.key].slots[slotIdx];
   const items = [];
-  if (r.weapons[slotIdx]) items.push({ title: '（卸下武器）', meta: '', onClick: () => { P.equipWeapon(robotId, slotIdx, null); closeModal(); renderAll(); } });
+  if (r.weapons[slotIdx]) items.push({ title: '（卸下武器）', meta: '', onClick: () => { closeModal(); run(P.equipWeapon(robotId, slotIdx, null)); } });
   const owned = P.profile.weapons.filter(w => WEAPONS[w.key].slot === st);
   for (const w of owned) {
     const wd = WEAPONS[w.key]; const on = P.weaponMountedOn(w.id);
-    items.push({ title: `${wd.name} Lv.${w.level}`, meta: `${KIND_NAME[wd.kind]} · ${TYPE_NAME[wd.type]} · ${wd.range}m · ${weaponDmg(wd, w.level)}×${wd.clip}${on ? ` · 装在 ${ROBOTS[on.key].name}` : ''}`, onClick: () => { P.equipWeapon(robotId, slotIdx, w.id); closeModal(); renderAll(); } });
+    items.push({ title: `${wd.name} Lv.${w.level}`, meta: `${KIND_NAME[wd.kind]} · ${TYPE_NAME[wd.type]} · ${wd.range}m · ${weaponDmg(wd, w.level)}×${wd.clip}${on ? ` · 装在 ${ROBOTS[on.key].name}` : ''}`, onClick: () => { closeModal(); run(P.equipWeapon(robotId, slotIdx, w.id)); } });
   }
   // shop shortcut
   Object.entries(WEAPONS).filter(([, wd]) => wd.slot === st).forEach(([key, wd]) => {
-    items.push({ title: `购买 ${wd.name}`, meta: `${KIND_NAME[wd.kind]} · ${wd.range}m · ${P.costStr(wd.cost)}`, disabled: !P.canAfford(wd.cost), onClick: () => { const w = P.buyWeapon(key); if (w) { P.equipWeapon(robotId, slotIdx, w.id); closeModal(); renderAll(); } } });
+    items.push({ title: `购买 ${wd.name}`, meta: `${KIND_NAME[wd.kind]} · ${wd.range}m · ${P.costStr(wd.cost)}`, disabled: !P.canAfford(wd.cost), onClick: async () => {
+      closeModal();
+      const before = new Set(P.profile.weapons.map(w => w.id));
+      if (!await run(P.buyWeapon(key))) return;
+      const w = P.profile.weapons.find(x => !before.has(x.id));
+      if (w) await run(P.equipWeapon(robotId, slotIdx, w.id));
+    } });
   });
   openModal(`装配 ${SLOT_NAME[st]}武器槽 ${slotIdx + 1}`, items);
 }
@@ -194,7 +210,11 @@ function renderShop() {
         <div class="meta">${CLS_NAME[def.cls]} · ${def.slots.map(s => SLOT_NAME[s][0]).join('')}<br>${Math.round(robotHp(def, def.minLevel) / 1000)}k HP · ${robotSpeed(def, def.minLevel)} km/h<br>${def.ability ? ABILITY_SHORT[def.ability.type] : '无技能'}${ownedN ? ` · 已拥有 ${ownedN}` : ''}</div>
         <div class="price ${def.cost.au ? 'au' : 'ag'}">${P.costStr(def.cost)}</div>
         <button class="primary small" ${P.canAfford(def.cost) ? '' : 'disabled'}>购买</button>`;
-      c.querySelector('button').addEventListener('click', () => { const r = P.buyRobot(key); if (r) { selected = r.id; renderAll(); } });
+      c.querySelector('button').addEventListener('click', async () => {
+        const before = new Set(P.profile.robots.map(r => r.id));
+        if (!await run(P.buyRobot(key))) return;
+        const r = P.profile.robots.find(x => !before.has(x.id)); if (r) { selected = r.id; renderAll(); }
+      });
       c.addEventListener('mouseenter', () => onPreview(key, def.slots.map(() => null)));
       el.appendChild(c);
     });
@@ -206,7 +226,7 @@ function renderShop() {
         <div class="meta">${KIND_NAME[wd.kind]} · ${TYPE_NAME[wd.type]}<br>${wd.range}m · ${weaponDmg(wd, wd.minLevel)}×${wd.clip}<br>DPS≈${weaponDps(wd, wd.minLevel)}${ownedN ? ` · 已拥有 ${ownedN}` : ''}</div>
         <div class="price ${wd.cost.au ? 'au' : 'ag'}">${P.costStr(wd.cost)}</div>
         <button class="primary small" ${P.canAfford(wd.cost) ? '' : 'disabled'}>购买</button>`;
-      c.querySelector('button').addEventListener('click', () => { if (P.buyWeapon(key)) renderAll(); });
+      c.querySelector('button').addEventListener('click', () => run(P.buyWeapon(key)));
       el.appendChild(c);
     });
   } else {
@@ -225,8 +245,8 @@ function renderShop() {
       c.innerHTML = `<div class="title">${wd.name}<span class="tier">Lv.${w.level}</span></div><div class="meta">${SLOT_NAME[wd.slot]} · ${on ? '装在 ' + ROBOTS[on.key].name : '闲置'}<br>${weaponDmg(wd, w.level)}×${wd.clip} · ${wd.range}m</div>
         <div class="row"><button class="ghost small">${w.level < weaponMaxLevel(wd) ? '升级 ' + P.fmt(weaponUpgradeCost(wd, w.level)) : 'MAX'}</button><button class="ghost small">出售</button></div>`;
       const [up, sell] = c.querySelectorAll('button');
-      up.addEventListener('click', () => { if (!P.upgradeWeapon(w.id)) alert('银币不足或已满级'); renderAll(); });
-      sell.addEventListener('click', () => { if (confirm(`出售 ${wd.name}？`)) { P.sellWeapon(w.id); renderAll(); } });
+      up.addEventListener('click', () => run(P.upgradeWeapon(w.id)));
+      sell.addEventListener('click', () => { if (confirm(`出售 ${wd.name}？`)) run(P.sellWeapon(w.id)); });
       el.appendChild(c);
     });
   }

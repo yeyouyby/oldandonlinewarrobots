@@ -3,6 +3,8 @@ import { MAP, mapBounds } from '../shared/map.js';
 import { losClear, nearestBoxHit, angleDiff, clamp, dist2d } from '../shared/geom.js';
 import { stepMotion, startJump, startDash } from '../shared/sim.js';
 import { NavGrid } from './nav.js';
+import { grantReward } from './profiles.js';
+import { sanitizeName } from '../shared/economy.js';
 import { BotBrain, randomBotHangar, BOT_NAMES } from './bots.js';
 
 const TICK = 1 / 20;
@@ -14,6 +16,8 @@ let nextPid = 1;
 let nextProjId = 1;
 
 // ------------------------------------------------------------------ helpers
+function num(v, dflt) { const n = Number(v); return Number.isFinite(n) ? n : dflt; }
+
 function safeHangar(h) {
   if (!Array.isArray(h)) return [];
   const out = [];
@@ -52,7 +56,7 @@ export function makeRobot(entry, team, spawn) {
     stealthT: 0, rushT: 0, rushMult: def.ability?.mult || 1,
     modeSentry: false, modeBastion: false, modeAssault: false, phalanx: false,
     pshield: def.pshield ? { hp: def.pshield.hp * maxHp, max: def.pshield.hp * maxHp } : null,
-    ancile: def.ancile ? { hp: def.ancile.hp * maxHp, max: def.ancile.hp * maxHp, downT: 0 } : null,
+    ancile: def.ancile ? { hp: def.ancile.sentryOnly ? 0 : def.ancile.hp * maxHp, max: def.ancile.hp * maxHp, downT: 0 } : null,
     lastDamageT: 0,
   };
   return r;
@@ -135,7 +139,7 @@ export class Room {
     if (this.teamCount(team) >= MATCH.maxPlayers) this.evictBot(team);
     const p = {
       id: nextPid++, room: this, ws, human: true, team,
-      name: String(msg.name || 'Pilot').slice(0, 16),
+      name: sanitizeName(msg.name), token: msg.token || null,
       hangar: safeHangar(msg.hangar),
       used: [], robot: null, input: { mx: 0, mz: 0, fire: 0, target: null, ab: 0, yaw: 0 }, lastAb: 0,
       stats: { kills: 0, damage: 0, beacons: 0, deaths: 0 },
@@ -152,7 +156,8 @@ export class Room {
   removeHuman(p) {
     if (p.robot) this.events.push({ k: 'leave', id: p.id });
     this.players.delete(p.id);
-    if (this.humanCount() === 0) this.destroy();
+    if (this.humanCount() === 0) { this.destroy(); return; }
+    if (this.phase !== 'ended') this.fillBots();
   }
 
   destroy() {
@@ -198,16 +203,17 @@ export class Room {
   onMessage(p, msg) {
     p.lastSeen = Date.now();
     if (msg.t === 'in') {
+      let yaw = num(msg.yaw, 0);
+      if (Math.abs(yaw) > 1e4) yaw = 0;
+      yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw)); // normalise to (-PI, PI]
+      const target = msg.target == null ? null : num(msg.target, NaN);
       p.input = {
-        mx: clamp(Number(msg.mx) || 0, -1, 1), mz: clamp(Number(msg.mz) || 0, -1, 1),
-        fire: Number(msg.fire) | 0, target: msg.target == null ? null : Number(msg.target),
-        ab: Number(msg.ab) | 0, yaw: Number(msg.yaw) || 0,
+        mx: clamp(num(msg.mx, 0), -1, 1), mz: clamp(num(msg.mz, 0), -1, 1),
+        fire: num(msg.fire, 0) | 0, target: Number.isInteger(target) ? target : null,
+        ab: num(msg.ab, 0) | 0, yaw,
       };
     } else if (msg.t === 'spawn') {
-      if (!p.robot && this.phase === 'battle') this.spawnRobot(p, Number(msg.index) | 0);
-    } else if (msg.t === 'hangar') {
-      // update hangar in waiting phase only
-      if (this.phase === 'waiting') p.hangar = safeHangar(msg.hangar);
+      if (!p.robot && this.phase === 'battle' && p.respawnAt <= 0) this.spawnRobot(p, num(msg.index, 0) | 0);
     }
   }
 
@@ -287,7 +293,9 @@ export class Room {
     for (const p of this.players.values()) {
       if (!p.human) continue;
       const win = winner === p.team;
-      this.send(p, { t: 'end', winner, win, draw: winner === 2, results, reward: rewardFor(p.stats, win), stats: p.stats });
+      const reward = rewardFor(p.stats, win);
+      const profile = p.token ? grantReward(p.token, reward, p.stats, win) : null;
+      this.send(p, { t: 'end', winner, win, draw: winner === 2, results, reward, stats: p.stats, profile });
     }
   }
 
@@ -300,9 +308,9 @@ export class Room {
     }
     // handle auto-respawn for bots & pending
     for (const p of this.players.values()) {
-      if (!p.robot && !p.human && p.used.length < p.hangar.length) {
-        p.respawnAt -= dt;
-        if (p.respawnAt <= 0) this.spawnRobot(p, p.used.length);
+      if (!p.robot && p.used.length < p.hangar.length) {
+        if (p.respawnAt > 0) p.respawnAt -= dt;
+        if (!p.human && p.respawnAt <= 0) this.spawnRobot(p, p.used.length);
       }
     }
 
@@ -408,7 +416,7 @@ export class Room {
     const dirX = inp.mx, dirZ = inp.mz;
     switch (ab.type) {
       case 'jump':
-        if (r.abilityCd <= 0 && r.y <= 0.01) { startJump(r, dirX, dirZ); r.abilityCd = ab.cd; this.events.push({ k: 'jump', id: p.id }); }
+        if (r.abilityCd <= 0 && r.vy === 0) { startJump(r, dirX, dirZ); r.abilityCd = ab.cd; this.events.push({ k: 'jump', id: p.id }); }
         break;
       case 'dash':
         if (r.charges > 0 && r.dashT <= 0) { r.charges--; startDash(r, dirX, dirZ); this.events.push({ k: 'dash', id: p.id }); }
@@ -423,7 +431,7 @@ export class Room {
         if (r.abilityCd <= 0) { r.stealthT = ab.dur; r.abilityCd = ab.cd; this.events.push({ k: 'stealth', id: p.id }); }
         break;
       case 'descend':
-        if (r.abilityCd <= 0 && r.y <= 0.01) { startJump(r, dirX, dirZ); r.stealthT = ab.dur; r.abilityCd = ab.cd; this.events.push({ k: 'jump', id: p.id }); }
+        if (r.abilityCd <= 0 && r.vy === 0) { startJump(r, dirX, dirZ); r.stealthT = ab.dur; r.abilityCd = ab.cd; this.events.push({ k: 'jump', id: p.id }); }
         break;
       case 'phalanx': r.phalanx = !r.phalanx; break;
       case 'sentry': r.modeSentry = !r.modeSentry; if (!r.modeSentry && r.ancile) r.ancile.hp = 0; break;
@@ -558,7 +566,7 @@ export class Room {
       // robot hit test
       let hitRobot = null, hitT = slen;
       for (const r of robots) {
-        if (r.team === pr.team || r === pr.ownerRobot || r.stealthT > 0) continue;
+        if (r.team === pr.team || r === pr.ownerRobot) continue;
         if (this.ownerTeam(r) === pr.team) continue;
         const cx = r.x, cy = r.y + r.height * 0.5, cz = r.z;
         const rad = r.radius * 1.35;
@@ -633,7 +641,8 @@ export class Room {
       }
     }
     // ancile (energy shield): blocks kinetic + explosive, energy passes
-    if (target.ancile && target.ancile.hp > 0 && dmgType !== 'energy') {
+    const ancileActive = target.ancile && target.ancile.hp > 0 && (!target.def.ancile.sentryOnly || target.modeSentry);
+    if (ancileActive && dmgType !== 'energy') {
       const absorbed = Math.min(target.ancile.hp, remaining);
       target.ancile.hp -= absorbed;
       remaining -= absorbed;

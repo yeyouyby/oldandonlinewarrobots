@@ -47,16 +47,19 @@ npm start          # 默认 http://localhost:8080 ，可用 PORT=3000 npm start 
 
 - 起始：200 万 Ag、2500 Au、Destrier Lv3（双 Punisher）+ Cossack Lv3（Molot T），3 个槽位；第 4/5 槽分别需 100 万 Ag / 1500 Au。
 - 商店购买机甲、武器；点击机甲的武器槽可装配 / 卸下 / 直接购买；升级消耗 Ag。
-- 右键机库槽位可更换 / 清空槽位。存档在浏览器 localStorage，`重置存档` 可恢复初始状态。
+- 右键机库槽位可更换 / 清空槽位。`重置存档` 可恢复初始状态。
+- **存档由服务器保管**（`data/profiles.json`，可用 `WR_DATA_DIR` 环境变量改目录）：浏览器只保存一个随机 token（localStorage）。所有购买 / 升级 / 装配 / 出战阵容都由服务器校验，客户端无法伪造机甲、等级或货币。清除浏览器数据会丢失 token，等于换了个新账号。
 
 ## 目录结构
 
 ```
-server/   index.js  HTTP 静态服务 + WebSocket 分房
+server/   index.js  HTTP 静态服务 + 存档 API + WebSocket 分房
+          profiles.js 服务器端权威存档（token → profile，落盘到 data/）
           room.js   一局对战：状态机、机甲/武器/护盾/信标/伤害判定
           bots.js   AI 机器人（目标选择、A* 寻路、技能）
           nav.js    导航网格
 shared/   data.js   机甲 / 武器数据（唯一数据源）
+          economy.js 存档规则：购买/升级/装配/槽位（服务器执行，客户端只展示）
           map.js    地图（Dead City 风格，点对称）
           sim.js    移动模拟（服务器与客户端预测共用）
           geom.js   几何 / 碰撞 / 视线
@@ -67,7 +70,7 @@ client/   index.html, css/style.css
           js/effects.js 弹道 / 爆炸 / 程序化音效
           js/hud.js     战斗 HUD / 小地图 / 结算
           js/hangar.js  机库 UI / 商店
-          js/profile.js 本地存档
+          js/profile.js 存档 API 客户端（token + 服务器返回的 profile）
 ```
 
 ## 调整数值
