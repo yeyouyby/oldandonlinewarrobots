@@ -14,7 +14,8 @@ async function post(url, body) {
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   let data = null;
   try { data = await res.json(); } catch { /* ignore */ }
-  if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+  // 400 = rejected action with a structured {ok:false,error,profile}; everything else is a real failure
+  if (!res.ok && !(res.status === 400 && data && typeof data.ok === 'boolean')) throw new Error((data && data.error) || `HTTP ${res.status}`);
   return data;
 }
 
@@ -29,17 +30,23 @@ export async function init() {
 export function setProfile(p) { if (p) profile = p; }
 
 // Send an action; resolves true on success, false (with lastError set) on rejection.
-export async function act(action) {
-  lastError = '';
-  try {
-    const data = await post('/api/profile/action', { token, action });
-    if (data.profile) profile = data.profile;
-    if (!data.ok) lastError = data.error || '操作失败';
-    return data.ok;
-  } catch (e) {
-    lastError = e.message || '网络错误';
-    return false;
-  }
+// Actions are serialized through a queue so responses can never apply out of order.
+let queue = Promise.resolve();
+export function act(action) {
+  const run = queue.then(async () => {
+    lastError = '';
+    try {
+      const data = await post('/api/profile/action', { token, action });
+      if (data.profile) profile = data.profile;
+      if (!data.ok) lastError = data.error || '操作失败';
+      return data.ok;
+    } catch (e) {
+      lastError = e.message || '网络错误';
+      return false;
+    }
+  });
+  queue = run.catch(() => {});
+  return run;
 }
 
 export async function reset() {

@@ -4,6 +4,9 @@
 import { ROBOTS, WEAPONS, START_PROFILE, SLOT_UNLOCK_COST, robotUpgradeCost, weaponUpgradeCost, robotMaxLevel, weaponMaxLevel } from './data.js';
 
 export const MAX_SLOTS = 5;
+const own = (obj, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(obj, k) ? obj[k] : null;
+export const robotDef = (k) => own(ROBOTS, k);
+export const weaponDef = (k) => own(WEAPONS, k);
 export const NAME_MAX = 14;
 
 export function sanitizeName(n) {
@@ -18,8 +21,8 @@ export function newProfile() {
   return p;
 }
 
-export function robotById(p, id) { return p.robots.find(r => r.id === id) || null; }
-export function weaponById(p, id) { return p.weapons.find(w => w.id === id) || null; }
+export function robotById(p, id) { return typeof id === 'string' ? p.robots.find(r => r.id === id) || null : null; }
+export function weaponById(p, id) { return typeof id === 'string' ? p.weapons.find(w => w.id === id) || null : null; }
 export function weaponMountedOn(p, wid) { return p.robots.find(r => r.weapons.includes(wid)) || null; }
 export function canAfford(p, cost) { return !cost || ((cost.ag || 0) <= p.ag && (cost.au || 0) <= p.au); }
 
@@ -36,12 +39,12 @@ export function hangarPayload(p) {
   for (let i = 0; i < Math.min(p.slotsUnlocked, MAX_SLOTS); i++) {
     const r = p.hangar[i] && robotById(p, p.hangar[i]);
     if (!r) continue;
-    const def = ROBOTS[r.key]; if (!def) continue;
+    const def = robotDef(r.key); if (!def) continue;
     out.push({
       key: r.key, level: r.level,
       weapons: def.slots.map((slot, si) => {
         const w = r.weapons[si] && weaponById(p, r.weapons[si]);
-        return w && WEAPONS[w.key] && WEAPONS[w.key].slot === slot ? { key: w.key, level: w.level } : null;
+        const wd = w && weaponDef(w.key); return wd && wd.slot === slot ? { key: w.key, level: w.level } : null;
       }),
     });
   }
@@ -58,9 +61,9 @@ export function applyReward(p, reward, stats, win) {
 export function applyAction(p, a) {
   if (!a || typeof a !== 'object') return fail('bad action');
   switch (a.type) {
-    case 'setName': { p.name = sanitizeName(a.name); return ok(); }
+    case 'setName': { if (typeof a.name !== 'string') return fail('bad name'); p.name = sanitizeName(a.name); return ok(); }
     case 'buyRobot': {
-      const def = ROBOTS[a.key]; if (!def) return fail('unknown robot');
+      const def = robotDef(a.key); if (!def) return fail('unknown robot');
       if (!pay(p, def.cost)) return fail('货币不足');
       const r = { id: newId(p), key: a.key, level: def.minLevel, weapons: def.slots.map(() => null) };
       p.robots.push(r);
@@ -69,7 +72,7 @@ export function applyAction(p, a) {
       return ok(r.id);
     }
     case 'buyWeapon': {
-      const def = WEAPONS[a.key]; if (!def) return fail('unknown weapon');
+      const def = weaponDef(a.key); if (!def) return fail('unknown weapon');
       if (!pay(p, def.cost)) return fail('货币不足');
       const w = { id: newId(p), key: a.key, level: def.minLevel };
       p.weapons.push(w);
@@ -95,7 +98,7 @@ export function applyAction(p, a) {
       const r = robotById(p, a.robotId); if (!r) return fail('no such robot');
       const slotIdx = Number(a.slot) | 0;
       const slotType = ROBOTS[r.key].slots[slotIdx]; if (!slotType) return fail('bad slot');
-      if (a.weaponId) {
+      if (a.weaponId != null && a.weaponId !== '') {
         const w = weaponById(p, a.weaponId); if (!w) return fail('no such weapon');
         if (WEAPONS[w.key].slot !== slotType) return fail('slot type mismatch');
         p.robots.forEach(o => { o.weapons = o.weapons.map(x => x === w.id ? null : x); });
@@ -126,6 +129,7 @@ export function applyAction(p, a) {
     case 'setSlot': {
       const idx = Number(a.idx) | 0;
       if (idx < 0 || idx >= p.slotsUnlocked) return fail('slot locked');
+      if (a.robotId != null && typeof a.robotId !== 'string') return fail('bad robot id');
       const rid = a.robotId || null;
       if (rid && !robotById(p, rid)) return fail('no such robot');
       p.hangar = p.hangar.map((s, i) => (rid && s === rid && i !== idx) ? null : s);
@@ -147,11 +151,11 @@ export function normalizeProfile(p) {
   out.name = sanitizeName(out.name);
   out.ag = Math.max(0, Number(out.ag) || 0); out.au = Math.max(0, Number(out.au) || 0);
   out.slotsUnlocked = Math.min(MAX_SLOTS, Math.max(1, Number(out.slotsUnlocked) || 3));
-  out.robots = (Array.isArray(out.robots) ? out.robots : []).filter(r => r && ROBOTS[r.key]).map(r => ({
+  out.robots = (Array.isArray(out.robots) ? out.robots : []).filter(r => r && robotDef(r.key)).map(r => ({
     id: String(r.id), key: r.key, level: Number(r.level) || ROBOTS[r.key].minLevel,
     weapons: ROBOTS[r.key].slots.map((_, i) => (Array.isArray(r.weapons) && r.weapons[i]) ? String(r.weapons[i]) : null),
   }));
-  out.weapons = (Array.isArray(out.weapons) ? out.weapons : []).filter(w => w && WEAPONS[w.key]).map(w => ({ id: String(w.id), key: w.key, level: Number(w.level) || WEAPONS[w.key].minLevel }));
+  out.weapons = (Array.isArray(out.weapons) ? out.weapons : []).filter(w => w && weaponDef(w.key)).map(w => ({ id: String(w.id), key: w.key, level: Number(w.level) || WEAPONS[w.key].minLevel }));
   out.hangar = Array.from({ length: MAX_SLOTS }, (_, i) => (Array.isArray(out.hangar) && out.hangar[i] && robotById(out, out.hangar[i])) ? out.hangar[i] : null);
   out.stats = { battles: 0, wins: 0, kills: 0, damage: 0, ...(out.stats || {}) };
   out.nextId = Math.max(10, Number(out.nextId) || 10);

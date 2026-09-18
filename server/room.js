@@ -3,7 +3,7 @@ import { MAP, mapBounds } from '../shared/map.js';
 import { losClear, nearestBoxHit, angleDiff, clamp, dist2d } from '../shared/geom.js';
 import { stepMotion, startJump, startDash } from '../shared/sim.js';
 import { NavGrid } from './nav.js';
-import { grantReward } from './profiles.js';
+import { grantReward, clearActive } from './profiles.js';
 import { sanitizeName } from '../shared/economy.js';
 import { BotBrain, randomBotHangar, BOT_NAMES } from './bots.js';
 
@@ -154,8 +154,10 @@ export class Room {
   }
 
   removeHuman(p) {
+    if (!this.players.has(p.id)) return;
     if (p.robot) this.events.push({ k: 'leave', id: p.id });
     this.players.delete(p.id);
+    if (p.token) clearActive(p.token, p);
     if (this.humanCount() === 0) { this.destroy(); return; }
     if (this.phase !== 'ended') this.fillBots();
   }
@@ -163,6 +165,7 @@ export class Room {
   destroy() {
     clearInterval(this.timer);
     for (const p of this.players.values()) {
+      if (p.token) clearActive(p.token, p);
       if (p.human && p.ws) { try { p.ws.close(1000, 'room closed'); } catch { /* ignore */ } }
     }
     this.players.clear();
@@ -294,7 +297,9 @@ export class Room {
       if (!p.human) continue;
       const win = winner === p.team;
       const reward = rewardFor(p.stats, win);
-      const profile = p.token ? grantReward(p.token, reward, p.stats, win) : null;
+      const profile = (p.token && !p.rewarded) ? grantReward(p.token, reward, p.stats, win) : null;
+      p.rewarded = true;
+      if (p.token) clearActive(p.token, p); // hangar edits allowed again while the results screen is up
       this.send(p, { t: 'end', winner, win, draw: winner === 2, results, reward, stats: p.stats, profile });
     }
   }

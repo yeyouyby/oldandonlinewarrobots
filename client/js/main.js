@@ -88,12 +88,26 @@ window.__G = G; // debug handle
 // ------------------------------------------------------------------ hangar UI
 // The profile lives on the server; log in first (creates one on first visit), then build the hangar UI.
 (async () => {
-  try {
-    await P.init();
-  } catch (e) {
-    hud.center('无法连接服务器：' + (e.message || e), 6000, '#ff7043');
-    $('hud').classList.remove('hidden');
+  const hangarEl = $('hangar');
+  const lobbyTitle = document.querySelector('#lobby h2');
+  const origTitle = lobbyTitle.textContent;
+  hangarEl.classList.add('hidden');
+  $('lobby').classList.remove('hidden');
+  lobbyTitle.textContent = '正在连接…'; $('btnCancel').classList.add('hidden');
+  hud.lobby('正在连接服务器…');
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await P.init();
+      break;
+    } catch (e) {
+      const wait = Math.min(15, 2 * attempt);
+      hud.lobby(`无法连接服务器（${e.message || e}），${wait} 秒后重试…`);
+      await new Promise(r => setTimeout(r, wait * 1000));
+    }
   }
+  $('lobby').classList.add('hidden');
+  lobbyTitle.textContent = origTitle; $('btnCancel').classList.remove('hidden');
+  hangarEl.classList.remove('hidden');
   initHangar({ preview: setPreview, onBattle: startMatchmaking });
 })();
 $('btnCancel').addEventListener('click', () => leaveBattle());
@@ -129,7 +143,10 @@ function onMessage(m) {
       if (m.phase === 'battle') enterBattle();
       break;
     case 's': onState(m); break;
-    case 'error': hud.lobby('服务器拒绝加入：' + (m.error || '未知错误'), G.hangar); break;
+    case 'error':
+      if (G.mode === 'battle') hud.center('已断开：' + (m.error || '未知错误'), 5000, '#ff7043');
+      else hud.lobby('服务器拒绝加入：' + (m.error || '未知错误'), G.hangar);
+      break;
     case 'destroyed':
       G.alive = false; G.deadT = 0;
       setTimeout(() => { if (G.mode === 'battle' && !G.alive && !G.results) hud.showRespawn(G.hangar, G.used, m.left, pickRespawn); }, 1800);

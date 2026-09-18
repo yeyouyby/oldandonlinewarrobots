@@ -25,6 +25,11 @@ const STATIC = [
   { prefix: '/', dir: path.join(ROOT, 'client') },
 ];
 
+function clientIp(req) {
+  const xf = process.env.TRUST_PROXY ? String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() : '';
+  return xf || req.socket.remoteAddress || '?';
+}
+
 function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(obj));
@@ -53,8 +58,9 @@ async function handleApi(req, res, url) {
 
   if (url === '/api/profile') {
     // login / create: returns token + profile
-    const { token, profile } = Profiles.getOrCreate(body.token);
-    return json(res, 200, { token, profile });
+    const r = Profiles.getOrCreate(body.token, clientIp(req));
+    if (r.error) return json(res, 429, { error: r.error });
+    return json(res, 200, { token: r.token, profile: r.profile });
   }
   if (url === '/api/profile/action') {
     if (!Profiles.get(body.token)) return json(res, 401, { error: 'unknown profile' });
@@ -128,8 +134,15 @@ wss.on('connection', (ws) => {
         if (!profile) { try { ws.send(JSON.stringify({ t: 'error', error: 'unknown profile' })); ws.close(4001, 'unknown profile'); } catch { /* ignore */ } return; }
         const hangar = Profiles.battleHangar(msg.token);
         if (!hangar.length) { try { ws.send(JSON.stringify({ t: 'error', error: 'empty hangar' })); ws.close(4002, 'empty hangar'); } catch { /* ignore */ } return; }
+        // one live session per profile: a second tab/socket kicks the previous one
+        const prev = Profiles.activePlayer(msg.token);
+        if (prev && prev.ws) {
+          try { prev.ws.send(JSON.stringify({ t: 'error', error: 'logged in elsewhere' })); prev.ws.close(4003, 'replaced'); } catch { /* ignore */ }
+          try { prev.room.removeHuman(prev); } catch { /* ignore */ }
+        }
         const room = findRoom();
         player = room.addHuman(ws, { name: profile.name, hangar, token: msg.token });
+        Profiles.setActive(msg.token, player);
         return;
       }
       player.room.onMessage(player, msg);
@@ -138,6 +151,7 @@ wss.on('connection', (ws) => {
     }
   });
   ws.on('close', () => { if (player) { try { player.room.removeHuman(player); } catch (e) { console.error('remove error', e); } } });
+  ws.on('close', () => { if (player && player.token) Profiles.clearActive(player.token, player); });
   ws.on('error', () => {});
 });
 
