@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>War Robots Classic — 网页版</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="stylesheet" href="/css/style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "/vendor/three/build/three.module.js",
+  "three/addons/": "/vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<!-- ================= HANGAR ================= -->
+<div id="hangar" class="screen">
+  <header class="topbar">
+    <div class="brand"><span class="wr">WAR ROBOTS</span><span class="classic">CLASSIC · 2018</span></div>
+    <div class="currency">
+      <span class="pill ag"><i></i><b id="ag">0</b></span>
+      <span class="pill au"><i></i><b id="au">0</b></span>
+      <span class="pill name" id="pilotName">Pilot</span>
+    </div>
+  </header>
+
+  <aside class="left">
+    <h3>机库 <small>HANGAR</small></h3>
+    <div id="hangarSlots"></div>
+    <div class="stats" id="profileStats"></div>
+    <div class="row">
+      <button id="btnReset" class="ghost small">重置存档</button>
+      <button id="btnHelp" class="ghost small">操作说明</button>
+    </div>
+  </aside>
+
+  <aside class="right">
+    <div id="robotPanel"></div>
+  </aside>
+
+  <footer class="bottombar">
+    <div class="tabs">
+      <button data-tab="robots" class="tab active">机甲商店</button>
+      <button data-tab="weapons" class="tab">武器商店</button>
+      <button data-tab="inventory" class="tab">仓库</button>
+    </div>
+    <div id="shop" class="shop"></div>
+    <button id="btnBattle" class="battle">进入战斗<br><small>TO BATTLE</small></button>
+  </footer>
+</div>
+
+<!-- ================= EQUIP MODAL ================= -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head"><span id="modalTitle">选择</span><button id="modalClose" class="ghost small">✕</button></div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+
+<!-- ================= MATCHMAKING ================= -->
+<div id="lobby" class="screen hidden center">
+  <div class="lobby-box">
+    <h2>正在搜索对手…</h2>
+    <p id="lobbyInfo">连接服务器</p>
+    <div class="lobby-hangar" id="lobbyHangar"></div>
+    <button id="btnCancel" class="ghost">取消</button>
+  </div>
+</div>
+
+<!-- ================= HUD ================= -->
+<div id="hud" class="hidden">
+  <div class="top-center">
+    <div class="scorebar">
+      <div class="team blue"><div class="fill" id="scoreBlue"></div><span id="scoreBlueTxt">1000</span></div>
+      <div class="timer" id="timer">10:00</div>
+      <div class="team red"><div class="fill" id="scoreRed"></div><span id="scoreRedTxt">1000</span></div>
+    </div>
+    <div class="beacons" id="beaconBar"></div>
+  </div>
+
+  <div class="killfeed" id="killfeed"></div>
+  <canvas id="minimap" width="200" height="140"></canvas>
+
+  <div id="crosshair"><div class="c1"></div><div class="c2"></div></div>
+  <div id="targetInfo" class="hidden">
+    <div class="tname" id="tName">Target</div>
+    <div class="thp"><div class="fill" id="tHp"></div></div>
+    <div class="tsub" id="tSub"></div>
+  </div>
+
+  <div class="bottom-left">
+    <div class="myrobot">
+      <div class="rname" id="myName">Destrier</div>
+      <div class="hpbar"><div class="fill" id="myHp"></div><span id="myHpTxt"></span></div>
+      <div class="shieldbar hidden" id="myShield"><div class="fill"></div></div>
+    </div>
+  </div>
+
+  <div class="bottom-right">
+    <div class="weapons" id="weaponSlots"></div>
+    <div class="ability" id="abilityBtn"><div class="cdmask"></div><span class="key">空格</span><span class="label" id="abilityLabel">—</span></div>
+  </div>
+
+  <div id="dmgNumbers"></div>
+  <div id="hint" class="hint">点击屏幕锁定鼠标 · WASD 移动 · 鼠标瞄准 · 左键开火 · 1/2/3 分组开火 · 空格 技能 · Tab 切换目标 · Q 画质</div>
+  <div id="centerMsg" class="center-msg hidden"></div>
+  <div class="vignette" id="vignette"></div>
+</div>
+
+<!-- ================= RESPAWN ================= -->
+<div id="respawn" class="screen hidden center">
+  <div class="respawn-box">
+    <h2 id="respawnTitle">机甲被摧毁</h2>
+    <p>选择下一台机甲出击</p>
+    <div id="respawnList" class="respawn-list"></div>
+    <button id="btnSpectate" class="ghost">继续观战</button>
+  </div>
+</div>
+
+<!-- ================= RESULTS ================= -->
+<div id="results" class="screen hidden center">
+  <div class="results-box">
+    <h1 id="resultTitle">胜利</h1>
+    <div class="reward" id="rewardTxt"></div>
+    <table id="resultTable"></table>
+    <button id="btnToHangar" class="battle small">返回机库</button>
+  </div>
+</div>
+
+<!-- ================= HELP ================= -->
+<div id="help" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head"><span>操作说明</span><button id="helpClose" class="ghost small">✕</button></div>
+    <div class="modal-body help">
+      <p><b>WASD</b> 移动 · <b>鼠标</b> 转动炮塔/视角 · <b>左键</b> 全部武器开火 · <b>1 / 2 / 3</b> 按轻/中/重分组开火</p>
+      <p><b>空格</b> 使用机甲技能（跳跃 / 冲刺 / 隐身 / 方阵 / 哨戒 / 堡垒…）· <b>Tab</b> 切换锁定目标 · <b>M</b> 静音 · <b>Q</b> 切换画质（低/中/高，卡顿时会自动降档）</p>
+      <p>玩法与 2018 年经典 <i>信标争夺</i> 一致：占领 5 个信标，敌方拥有的信标越多，你方的控制条掉得越快；控制条归零或全灭即失败。每局最多出动 5 台机甲。</p>
+      <p>数值参考 2026 版本 wiki（MK1 等级 HP / 伤害），保留 2018 的机甲阵容与玩法风格：物理盾、能量盾（Ancile）、机枪加速、火箭溅射、等离子穿盾等。</p>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "war-robots-classic-web",
+  "version": "1.0.0",
+  "description": "Lightweight online 3D web remake of 2018-era War Robots",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yeyouyby/oldandonlinewarrobots.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/yeyouyby/oldandonlinewarrobots/issues"
+  },
+  "homepage": "https://github.com/yeyouyby/oldandonlinewarrobots#readme",
+  "dependencies": {
+    "three": "^0.160.0",
+    "ws": "^8.21.3"
+  },
+  "type": "module"
+}
