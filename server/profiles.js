@@ -59,8 +59,8 @@ export function flush() {
 
 export function validToken(t) { return typeof t === 'string' && TOKEN_RE.test(t); }
 
-// A profile that never did anything can be evicted to make room.
-function isPristine(p) { return p.stats.battles === 0 && p.robots.length === 2 && p.weapons.length === 3 && p.ag === 2000000 && p.au === 2500; }
+// Only profiles that have NEVER been modified (no purchase, rename, equip, layout change, battle) may be evicted.
+function isPristine(p) { return !p.touched && p.stats.battles === 0; }
 
 function evictIdle() {
   const now = Date.now();
@@ -87,6 +87,10 @@ function rateLimited(ip) {
 }
 
 // Returns { token, profile } for a known token; otherwise creates a fresh profile subject to limits.
+// The client generates and persists its own random token BEFORE the first request, so if the reply
+// is lost the retry carries the same token and simply finds the profile that was already created
+// (idempotent — no duplicate accounts, no extra quota consumed). A missing/invalid token gets a
+// server-generated one.
 // Returns { error } if creation is refused.
 export function getOrCreate(token, ip = '?') {
   if (validToken(token) && profiles.has(token)) {
@@ -96,7 +100,7 @@ export function getOrCreate(token, ip = '?') {
   if (rateLimited(ip)) return { error: 'too many new profiles from this address, try again later' };
   if (profiles.size >= MAX_PROFILES) evictIdle();
   if (profiles.size >= MAX_PROFILES) return { error: 'server is full' };
-  const t = crypto.randomBytes(24).toString('hex');
+  const t = validToken(token) ? token : crypto.randomBytes(24).toString('hex');
   const p = newProfile(); p.lastSeen = Date.now();
   profiles.set(t, p);
   scheduleSave();
@@ -111,7 +115,7 @@ export function act(token, action) {
   if (active.has(token)) return { ok: false, error: '战斗中无法修改机库' };
   p.lastSeen = Date.now();
   const res = applyAction(p, action);
-  if (res.ok) scheduleSave();
+  if (res.ok) { p.touched = true; scheduleSave(); }
   return { ...res, profile: p };
 }
 
@@ -138,6 +142,7 @@ export function grantReward(token, reward, stats, win) {
   const p = get(token);
   if (!p) return null;
   applyReward(p, reward, stats, win);
+  p.touched = true;
   p.lastSeen = Date.now();
   scheduleSave();
   return p;

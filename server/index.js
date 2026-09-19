@@ -134,24 +134,32 @@ wss.on('connection', (ws) => {
         if (!profile) { try { ws.send(JSON.stringify({ t: 'error', error: 'unknown profile' })); ws.close(4001, 'unknown profile'); } catch { /* ignore */ } return; }
         const hangar = Profiles.battleHangar(msg.token);
         if (!hangar.length) { try { ws.send(JSON.stringify({ t: 'error', error: 'empty hangar' })); ws.close(4002, 'empty hangar'); } catch { /* ignore */ } return; }
-        // one live session per profile: a second tab/socket kicks the previous one
+        // one live session per profile: a second tab/socket takes over the EXISTING match participant
+        // (robot, used hangar slots and stats are kept — nothing is reset)
         const prev = Profiles.activePlayer(msg.token);
-        if (prev && prev.ws) {
-          try { prev.ws.send(JSON.stringify({ t: 'error', error: 'logged in elsewhere' })); prev.ws.close(4003, 'replaced'); } catch { /* ignore */ }
-          try { prev.room.removeHuman(prev); } catch { /* ignore */ }
+        if (prev && prev.room && prev.room.players.has(prev.id) && prev.room.phase !== 'ended') {
+          player = prev;
+          player.room.takeOver(player, ws);
+          return;
         }
+        if (prev) { try { prev.room.removeHuman(prev); } catch { /* ignore */ } }
         const room = findRoom();
         player = room.addHuman(ws, { name: profile.name, hangar, token: msg.token });
         Profiles.setActive(msg.token, player);
         return;
       }
+      if (player.ws !== ws) return; // stale socket after a takeover
       player.room.onMessage(player, msg);
     } catch (e) {
       console.error('ws message error', e);
     }
   });
-  ws.on('close', () => { if (player) { try { player.room.removeHuman(player); } catch (e) { console.error('remove error', e); } } });
-  ws.on('close', () => { if (player && player.token) Profiles.clearActive(player.token, player); });
+  ws.on('close', () => {
+    // if this socket was replaced by a newer one, the player lives on — don't touch it
+    if (!player || player.ws !== ws) return;
+    try { player.room.removeHuman(player); } catch (e) { console.error('remove error', e); }
+    if (player.token) Profiles.clearActive(player.token, player);
+  });
   ws.on('error', () => {});
 });
 

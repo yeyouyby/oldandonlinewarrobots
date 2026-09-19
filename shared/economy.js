@@ -159,5 +159,7 @@ export function normalizeProfile(p) {
   out.hangar = Array.from({ length: MAX_SLOTS }, (_, i) => (Array.isArray(out.hangar) && out.hangar[i] && robotById(out, out.hangar[i])) ? out.hangar[i] : null);
   out.stats = { battles: 0, wins: 0, kills: 0, damage: 0, ...(out.stats || {}) };
   out.nextId = Math.max(10, Number(out.nextId) || 10);
+  out.touched = !!out.touched;
+  out.lastSeen = Number(out.lastSeen) || 0;
   return out;
 }

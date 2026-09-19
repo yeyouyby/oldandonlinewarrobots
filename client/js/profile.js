@@ -19,8 +19,16 @@ async function post(url, body) {
   return data;
 }
 
+function randomToken() {
+  const b = new Uint8Array(24); crypto.getRandomValues(b);
+  return Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+}
+
 // Log in (or create) the profile on the server.
+// We pick and persist our token *before* the first request so that a lost reply + retry
+// resolves to the same account instead of creating another one.
 export async function init() {
+  if (!token) { token = randomToken(); localStorage.setItem(TOKEN_KEY, token); }
   const data = await post('/api/profile', { token });
   token = data.token; profile = data.profile;
   localStorage.setItem(TOKEN_KEY, token);

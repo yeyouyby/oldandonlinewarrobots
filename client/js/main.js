@@ -141,6 +141,7 @@ function onMessage(m) {
       G.myId = m.id; G.myTeam = m.team; G.phase = m.phase;
       hud.lobby(`已加入房间 #${m.room} · 你在${m.team === 0 ? '蓝' : '红'}队 · 战斗即将开始`, G.hangar);
       if (m.phase === 'battle') enterBattle();
+      if (m.resumed && Array.isArray(m.used)) { G.used = m.used.slice(); hud.center('已恢复会话', 1500); }
       break;
     case 's': onState(m); break;
     case 'error':

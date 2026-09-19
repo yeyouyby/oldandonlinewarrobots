@@ -153,6 +153,17 @@ export class Room {
     return p;
   }
 
+  // Hand the existing match participant over to a new socket (second tab / reconnect).
+  // Nothing about the match state (robot, used list, stats) changes.
+  takeOver(p, ws) {
+    const old = p.ws;
+    p.ws = ws;
+    p.lastSeen = Date.now();
+    if (old && old !== ws) { try { old.send(JSON.stringify({ t: 'error', error: 'logged in elsewhere' })); old.close(4003, 'replaced'); } catch { /* ignore */ } }
+    this.send(p, { t: 'welcome', id: p.id, team: p.team, room: this.id, phase: this.phase, countdown: this.countdown, resumed: true, used: [...p.used] });
+    if (this.phase === 'battle' && !p.robot) this.send(p, { t: 'destroyed', left: p.hangar.length - p.used.length });
+  }
+
   removeHuman(p) {
     if (!this.players.has(p.id)) return;
     if (p.robot) this.events.push({ k: 'leave', id: p.id });
