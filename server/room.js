@@ -141,7 +141,7 @@ export class Room {
       id: nextPid++, room: this, ws, human: true, team,
       name: sanitizeName(msg.name), token: msg.token || null,
       hangar: safeHangar(msg.hangar),
-      used: [], robot: null, input: { mx: 0, mz: 0, fire: 0, target: null, ab: 0, yaw: 0 }, lastAb: 0,
+      used: [], robot: null, input: { mx: 0, mz: 0, fire: 0, target: null, ab: 0, yaw: 0 }, lastAb: 0, abResync: true,
       stats: { kills: 0, damage: 0, beacons: 0, deaths: 0 },
       spawnRequested: null, respawnAt: 0, lastSeen: Date.now(),
     };
@@ -159,6 +159,10 @@ export class Room {
     const old = p.ws;
     p.ws = ws;
     p.lastSeen = Date.now();
+    // Drop the old socket's control state. The new client starts its ability counter from 0, so the
+    // first input on this socket must re-baseline lastAb instead of being interpreted as a key press.
+    p.input = { mx: 0, mz: 0, fire: 0, target: null, ab: 0, yaw: p.input.yaw };
+    p.abResync = true;
     if (old && old !== ws) { try { old.send(JSON.stringify({ t: 'error', error: 'logged in elsewhere' })); old.close(4003, 'replaced'); } catch { /* ignore */ } }
     this.send(p, { t: 'welcome', id: p.id, team: p.team, room: this.id, phase: this.phase, countdown: this.countdown, resumed: true, used: [...p.used] });
     if (this.phase === 'battle' && !p.robot) this.send(p, { t: 'destroyed', left: p.hangar.length - p.used.length });
@@ -221,10 +225,12 @@ export class Room {
       if (Math.abs(yaw) > 1e4) yaw = 0;
       yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw)); // normalise to (-PI, PI]
       const target = msg.target == null ? null : num(msg.target, NaN);
+      const ab = num(msg.ab, 0) | 0;
+      if (p.abResync) { p.lastAb = ab; p.abResync = false; }
       p.input = {
         mx: clamp(num(msg.mx, 0), -1, 1), mz: clamp(num(msg.mz, 0), -1, 1),
         fire: num(msg.fire, 0) | 0, target: Number.isInteger(target) ? target : null,
-        ab: num(msg.ab, 0) | 0, yaw,
+        ab, yaw,
       };
     } else if (msg.t === 'spawn') {
       if (!p.robot && this.phase === 'battle' && p.respawnAt <= 0) this.spawnRobot(p, num(msg.index, 0) | 0);
