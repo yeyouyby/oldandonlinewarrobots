@@ -41,9 +41,20 @@ export class Effects {
 
   add(obj, life, update) {
     // hard cap on live effect objects: drop the oldest when the budget is exceeded
-    if (this.items.length >= MAX_FX) { const old = this.items.shift(); this.scene.remove(old.obj); }
+    if (this.items.length >= MAX_FX) this.release(this.items.shift());
     this.scene.add(obj);
     this.items.push({ obj, life, max: life, update });
+  }
+
+  // Remove an effect from the scene and free its per-instance GPU resources.
+  // Shared geometries/materials (spark/boom/debris/smoke) are kept; the glow texture is shared too,
+  // so only the SpriteMaterial that wraps it is disposed.
+  release(it) {
+    this.scene.remove(it.obj);
+    const g = it.obj.geometry;
+    if (g && g !== this.sparkGeo && g !== this.boomGeo && g !== this.debrisGeo) g.dispose?.();
+    const mt = it.obj.material;
+    if (mt && mt !== this.smokeMat && mt !== this.debrisMat) mt.dispose?.();
   }
 
   // Muzzle-flash / explosion "light" without a real PointLight (adding/removing lights forces every
@@ -195,21 +206,13 @@ export class Effects {
     for (let i = this.items.length - 1; i >= 0; i--) {
       const it = this.items[i];
       it.life -= dt;
-      if (it.life <= 0) {
-        this.scene.remove(it.obj);
-        const g = it.obj.geometry;
-        if (g && g !== this.sparkGeo && g !== this.boomGeo && g !== this.debrisGeo) g.dispose?.();
-        const mt = it.obj.material;
-        if (mt && mt !== this.smokeMat && mt !== this.debrisMat) mt.dispose?.();
-        this.items.splice(i, 1);
-        continue;
-      }
+      if (it.life <= 0) { this.release(it); this.items.splice(i, 1); continue; }
       it.update && it.update(it.obj, it.life / it.max, dt);
     }
   }
 
   clear() {
-    for (const it of this.items) this.scene.remove(it.obj);
+    for (const it of this.items) this.release(it);
     this.items = [];
     for (const m of this.projMeshes.values()) this.scene.remove(m);
     this.projMeshes.clear();

@@ -24,19 +24,39 @@ const QUALITY = [
 let qualityIdx = Number(localStorage.getItem('wr-quality') ?? 1);
 if (!(qualityIdx >= 0 && qualityIdx <= 2)) qualityIdx = 1;
 const Q = () => QUALITY[qualityIdx];
-const canvas = $('gl');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: Q().antialias, powerPreference: 'high-performance', stencil: false });
-renderer.shadowMap.type = THREE.PCFShadowMap;      // PCFSoft is ~2x the shadow cost
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+// Antialiasing is a WebGL context-creation flag: it cannot be toggled on a live renderer, and a
+// <canvas> keeps its first context for good (a second getContext() call ignores new attributes).
+// So when the preset's antialias value changes we swap in a brand-new canvas element and build a
+// fresh renderer on it; the old context is released explicitly.
+let canvas = $('gl');
+let renderer = null;
+let rendererAA = null;
+function makeRenderer(antialias) {
+  if (renderer) {
+    renderer.dispose(); renderer.forceContextLoss();
+    const fresh = document.createElement('canvas'); fresh.id = 'gl';
+    canvas.replaceWith(fresh); canvas = fresh; bindCanvasEvents(canvas);
+  }
+  renderer = new THREE.WebGLRenderer({ canvas, antialias, powerPreference: 'high-performance', stencil: false });
+  rendererAA = antialias;
+  renderer.shadowMap.type = THREE.PCFShadowMap;      // PCFSoft is ~2x the shadow cost
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  return renderer;
+}
+makeRenderer(Q().antialias);
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 1400);
 function applyQuality() {
   const q = Q();
+  if (q.antialias !== rendererAA) makeRenderer(q.antialias);
   renderer.setPixelRatio(Math.min(devicePixelRatio, q.pixelRatio));
   renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = q.shadows;
-  if (q.shadows) { sun.shadow.mapSize.set(q.shadowMap, q.shadowMap); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
   sun.castShadow = q.shadows;
+  // always drop the previous shadow render target; three re-allocates it lazily at the new size
+  // (or never, when shadows are off) so the old 1024²/2048² texture is not retained.
+  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  if (q.shadows) sun.shadow.mapSize.set(q.shadowMap, q.shadowMap);
   const d = q.shadowDist || 160;
   sun.shadow.camera.left = sun.shadow.camera.bottom = -d; sun.shadow.camera.right = sun.shadow.camera.top = d;
   sun.shadow.camera.updateProjectionMatrix();
@@ -446,15 +466,18 @@ addEventListener('keydown', (e) => {
 });
 addEventListener('keyup', (e) => { G.keys[e.code] = false; });
 addEventListener('blur', () => { G.keys = {}; G.mouseDown = false; });
-canvas.addEventListener('mousedown', (e) => {
-  if (G.mode !== 'battle') return;
-  audio.ensure();
-  if (document.pointerLockElement !== canvas) { canvas.requestPointerLock?.(); return; }
-  if (e.button === 0) G.mouseDown = true;
-  if (e.button === 2) cycleTarget();
-});
+function bindCanvasEvents(c) {
+  c.addEventListener('mousedown', (e) => {
+    if (G.mode !== 'battle') return;
+    audio.ensure();
+    if (document.pointerLockElement !== canvas) { canvas.requestPointerLock?.(); return; }
+    if (e.button === 0) G.mouseDown = true;
+    if (e.button === 2) cycleTarget();
+  });
+  c.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+bindCanvasEvents(canvas);
 addEventListener('mouseup', (e) => { if (e.button === 0) G.mouseDown = false; });
-canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 addEventListener('mousemove', (e) => {
   if (G.mode !== 'battle' || document.pointerLockElement !== canvas) return;
   G.camYaw -= (e.movementX || 0) * 0.0025;
