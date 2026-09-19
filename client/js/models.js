@@ -1,6 +1,7 @@
 // Procedural low-poly robot + weapon meshes, in the style of the 2018 hangar.
 import * as THREE from 'three';
 import { ROBOTS, WEAPONS } from '/shared/data.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const TEAM_COLORS = { 0: 0x2f7fd8, 1: 0xd8432f, self: 0xffb020 };
 const matCache = new Map();
@@ -13,10 +14,51 @@ export function mat(color, opts = {}) {
   return m;
 }
 
+const geoCache = new Map();
+const cached = (key, make) => { let g = geoCache.get(key); if (!g) { g = make(); geoCache.set(key, g); } return g; };
 const G = {
-  box: (w, h, d) => new THREE.BoxGeometry(w, h, d),
-  cyl: (rt, rb, h, s = 8) => new THREE.CylinderGeometry(rt, rb, h, s),
+  box: (w, h, d) => cached(`b${w.toFixed(3)},${h.toFixed(3)},${d.toFixed(3)}`, () => new THREE.BoxGeometry(w, h, d)),
+  cyl: (rt, rb, h, s = 8) => cached(`c${rt.toFixed(3)},${rb.toFixed(3)},${h.toFixed(3)},${s}`, () => new THREE.CylinderGeometry(rt, rb, h, s)),
 };
+
+// Merge the direct Mesh children of every Group into one Mesh per material.
+// Child Groups (animated joints, hardpoints, barrel spinners) are preserved, so the rig still animates,
+// but a robot goes from ~40 draw calls to ~8. Meshes with userData.keep are left alone.
+const bakedMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.65, metalness: 0.35, flatShading: true });
+// Plain opaque, non-emissive standard materials can share ONE material by baking their color into vertex colors.
+const canVertexBake = (m) => m.isMeshStandardMaterial && !m.transparent && m.emissive.getHex() === 0 && !m.map && !m.wireframe;
+function colorize(geo, color) {
+  const n = geo.attributes.position.count, arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { arr[i * 3] = color.r; arr[i * 3 + 1] = color.g; arr[i * 3 + 2] = color.b; }
+  geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+  return geo;
+}
+export function bakeGroup(root) {
+  const groups = [];
+  root.traverse(o => { if (o.isGroup || o === root) groups.push(o); });
+  for (const g of groups) {
+    const meshes = g.children.filter(c => c.isMesh && !c.userData.keep && !c.name);
+    if (meshes.length < 2) continue;
+    const byMat = new Map();
+    for (const m of meshes) {
+      m.updateMatrix();
+      const geo = m.geometry.clone().applyMatrix4(m.matrix);
+      const key = canVertexBake(m.material) ? bakedMat : m.material;
+      if (key === bakedMat) colorize(geo, m.material.color);
+      if (!byMat.has(key)) byMat.set(key, []);
+      byMat.get(key).push(geo);
+      g.remove(m);
+    }
+    for (const [material, geos] of byMat) {
+      const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+      if (geos.length > 1) geos.forEach(x => x.dispose());
+      const mesh = new THREE.Mesh(merged, material);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      g.add(mesh);
+    }
+  }
+  return root;
+}
 
 function box(w, h, d, m, x = 0, y = 0, z = 0) {
   const me = new THREE.Mesh(G.box(w, h, d), m); me.position.set(x, y, z); me.castShadow = true; me.receiveShadow = true; return me;
@@ -111,6 +153,8 @@ export function buildWeapon(key, teamColor) {
   }
   g.scale.setScalar(scale);
   g.userData.muzzle = new THREE.Vector3(0, 0, 2.5 * scale);
+  bakeGroup(g);
+  g.userData.spin = g.getObjectByName('spin') || null;
   return g;
 }
 
@@ -187,6 +231,7 @@ export function buildRobot(key, team, isSelf = false) {
       const sh2 = sh.clone(); sh2.position.x = -shape.w * s * 0.55; sh.position.x = shape.w * s * 0.55; holder.add(sh2);
     }
     holder.name = 'pshield';
+    holder.traverse(o => { if (o.isMesh) o.userData.keep = true; });
     (ps.side === 0 ? torso : legs).add(holder);
     if (ps.side !== 0) holder.position.y = torso.position.y; // relative to legs
     pshield = { holder, mesh: sh, def: ps };
@@ -195,6 +240,7 @@ export function buildRobot(key, team, isSelf = false) {
     const sphere = new THREE.Mesh(new THREE.SphereGeometry(shape.w * s * 1.5, 16, 12), new THREE.MeshBasicMaterial({ color: 0x40d0ff, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false }));
     sphere.position.y = shape.h * s * 0.5;
     sphere.scale.y = 1.2;
+    sphere.userData.keep = true;
     torso.add(sphere);
     ancile = sphere;
   }
@@ -212,12 +258,15 @@ export function buildRobot(key, team, isSelf = false) {
       });
     },
     setStealth(on) {
-      group.traverse(o => { if (o.isMesh) { o.material = on ? stealthMat : o.userData.origMat || o.material; if (!on) o.userData.origMat = null; else if (!o.userData.origMat) o.userData.origMat = o.material === stealthMat ? o.userData.origMat : o.material; } });
+      // weapons may be attached after build, so record original materials lazily
+      group.traverse(o => {
+        if (!o.isMesh) return;
+        if (on) { if (o.material !== stealthMat) { o.userData.origMat = o.material; o.material = stealthMat; } }
+        else if (o.userData.origMat) { o.material = o.userData.origMat; }
+      });
     },
   };
-  // preserve original materials for stealth toggling
-  group.traverse(o => { if (o.isMesh) o.userData.origMat = o.material; });
-  obj.setStealth = (on) => { group.traverse(o => { if (o.isMesh && o.userData.origMat) o.material = on ? stealthMat : o.userData.origMat; }); };
+  bakeGroup(group);
   return obj;
 }
 

@@ -15,15 +15,40 @@ const $ = (id) => document.getElementById(id);
 const BOUNDS = mapBounds();
 
 // ------------------------------------------------------------------ renderer
+// Quality presets: 0 low, 1 medium, 2 high. Persisted; auto-lowered when the frame rate is poor.
+const QUALITY = [
+  { name: '低', pixelRatio: 0.75, shadows: false, shadowMap: 0, antialias: false, shadowDist: 0 },
+  { name: '中', pixelRatio: 1.0, shadows: true, shadowMap: 1024, antialias: true, shadowDist: 160 },
+  { name: '高', pixelRatio: 1.5, shadows: true, shadowMap: 2048, antialias: true, shadowDist: 260 },
+];
+let qualityIdx = Number(localStorage.getItem('wr-quality') ?? 1);
+if (!(qualityIdx >= 0 && qualityIdx <= 2)) qualityIdx = 1;
+const Q = () => QUALITY[qualityIdx];
 const canvas = $('gl');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: Q().antialias, powerPreference: 'high-performance', stencil: false });
+renderer.shadowMap.type = THREE.PCFShadowMap;      // PCFSoft is ~2x the shadow cost
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
-const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 1800);
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 1400);
+function applyQuality() {
+  const q = Q();
+  renderer.setPixelRatio(Math.min(devicePixelRatio, q.pixelRatio));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = q.shadows;
+  if (q.shadows) { sun.shadow.mapSize.set(q.shadowMap, q.shadowMap); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
+  sun.castShadow = q.shadows;
+  const d = q.shadowDist || 160;
+  sun.shadow.camera.left = sun.shadow.camera.bottom = -d; sun.shadow.camera.right = sun.shadow.camera.top = d;
+  sun.shadow.camera.updateProjectionMatrix();
+  // materials cache the shadow-map define; force a rebuild so toggling shadows takes effect
+  scene.traverse(o => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m.needsUpdate = true; }); });
+  localStorage.setItem('wr-quality', String(qualityIdx));
+}
+function setQuality(i, announce = true) {
+  qualityIdx = Math.max(0, Math.min(2, i));
+  applyQuality();
+  if (announce) hud.center(`画质：${Q().name}（按 Q 切换）`, 1500);
+}
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
 // ------------------------------------------------------------------ hangar scene
@@ -60,14 +85,29 @@ scene.fog = new THREE.Fog(0x7f93a8, 250, 900);
 let world = null;
 const sun = new THREE.DirectionalLight(0xfff1dc, 2.4);
 sun.position.set(180, 260, 120); sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+// The shadow frustum follows the camera focus (see updateCamera), so it can be small & sharp.
 sun.shadow.camera.near = 50; sun.shadow.camera.far = 700;
-sun.shadow.camera.left = sun.shadow.camera.bottom = -360; sun.shadow.camera.right = sun.shadow.camera.top = 360;
 sun.shadow.bias = -0.0005;
 scene.add(sun, sun.target, new THREE.HemisphereLight(0xbfd4ee, 0x4a4438, 0.9));
 const effects = new Effects(scene, camera);
 const hud = new HUD();
 const audio = effects.audio;
+applyQuality();
+
+// ---- adaptive quality: if the battle runs below ~30 fps for a few seconds, step down once
+const perf = { acc: 0, frames: 0, slowStreak: 0, autoDropped: false };
+function trackFps(dt) {
+  perf.acc += dt; perf.frames++;
+  if (perf.acc < 2) return;
+  const fps = perf.frames / perf.acc; perf.acc = 0; perf.frames = 0;
+  if (G.mode !== 'battle') return;
+  if (fps < 30) perf.slowStreak++; else perf.slowStreak = 0;
+  if (perf.slowStreak >= 2 && qualityIdx > 0 && !perf.autoDropped) {
+    perf.autoDropped = true; perf.slowStreak = 0;
+    setQuality(qualityIdx - 1, false);
+    hud.center(`帧率偏低，已自动切换到「${Q().name}」画质（按 Q 手动调整）`, 3000);
+  }
+}
 
 // ------------------------------------------------------------------ game state
 const G = {
@@ -313,7 +353,7 @@ function makeNameLabel(text, color) {
 }
 
 // ------------------------------------------------------------------ events
-const V = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3() };
+const V = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), q: new THREE.Quaternion() };
 function entityPos(id, out, heightFrac = 0.5) {
   const e = G.entities.get(id); if (!e) return null;
   const def = ROBOTS[e.key];
@@ -329,11 +369,13 @@ function onEvent(ev) {
       const e = G.entities.get(ev.id); if (!e) break;
       const wm = e.obj.weaponMeshes[ev.s];
       const muzzle = V.a;
-      if (wm) { wm.getWorldPosition(muzzle); muzzle.add(V.c.set(0, 0, 0).applyQuaternion(wm.getWorldQuaternion(new THREE.Quaternion()))); const fwd = V.c.set(0, 0, 3).applyQuaternion(wm.getWorldQuaternion(new THREE.Quaternion())); muzzle.add(fwd); }
+      if (wm) { wm.getWorldPosition(muzzle); wm.getWorldQuaternion(V.q); muzzle.add(V.c.set(0, 0, 3).applyQuaternion(V.q)); }
       else entityPos(ev.id, muzzle, 0.7);
-      effects.muzzleFlash(muzzle.clone(), ev.w);
+      // distance culling for tiny effects: MG flashes far away are invisible anyway
+      const far = muzzle.distanceToSquared(camera.position) > 350 * 350;
+      if (!far) effects.muzzleFlash(muzzle.clone(), ev.w);
       audio.play(ev.w, muzzle);
-      const spin = wm && wm.getObjectByName('spin'); if (spin) spin.userData.spin = 1;
+      const spin = wm && wm.userData.spin; if (spin) spin.userData.spin = 1;
       if (ev.tg != null) {
         const tp = entityPos(ev.tg, V.b, 0.5);
         if (tp) {
@@ -341,8 +383,8 @@ function onEvent(ev) {
           else {
             if (!ev.hit) tp.add(new THREE.Vector3((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 8));
             else { tp.x += (Math.random() - 0.5) * 2; tp.y += (Math.random() - 0.5) * 2; tp.z += (Math.random() - 0.5) * 2; }
-            effects.tracer(muzzle.clone(), tp.clone(), ev.w, ev.w === 'beam' ? 2.5 : ev.w === 'cannon' ? 2 : 1);
-            if (ev.hit) effects.sparks(tp.clone(), ev.w, 3);
+            if (!far || ev.w !== 'mg') effects.tracer(muzzle.clone(), tp.clone(), ev.w, ev.w === 'beam' ? 2.5 : ev.w === 'cannon' ? 2 : 1);
+            if (ev.hit && !far) effects.sparks(tp.clone(), ev.w, 2);
           }
         }
       }
@@ -399,6 +441,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); useAbility(); }
   if (e.code === 'Tab') { e.preventDefault(); cycleTarget(); }
   if (e.code === 'KeyM') { const m = audio.toggleMute(); hud.center(m ? '已静音' : '声音开启', 800); }
+  if (e.code === 'KeyQ') { perf.autoDropped = true; setQuality((qualityIdx + 1) % 3); }
   if (e.code === 'Escape') { /* pointer lock exits automatically */ }
 });
 addEventListener('keyup', (e) => { G.keys[e.code] = false; });
@@ -514,7 +557,7 @@ function cycleTarget() {
 }
 
 // ------------------------------------------------------------------ camera
-const camTmp = new THREE.Vector3();
+const camTmp = new THREE.Vector3(), camDirTmp = new THREE.Vector3(), camPosTmp = new THREE.Vector3(), camLookTmp = new THREE.Vector3();
 function updateCamera(dt) {
   let focus, dist, h;
   if (G.alive && G.pred) {
@@ -530,15 +573,15 @@ function updateCamera(dt) {
     dist = 40; h = 0;
   }
   const pitch = G.camPitch;
-  const dir = new THREE.Vector3(-Math.sin(G.camYaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(G.camYaw) * Math.cos(pitch));
+  const dir = camDirTmp.set(-Math.sin(G.camYaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(G.camYaw) * Math.cos(pitch));
   // camera collision
   const hitT = nearestBoxHit(focus.x, focus.y, focus.z, dir.x, dir.y, dir.z, dist, BOUNDS);
   const d = hitT >= 0 ? Math.max(3, hitT - 1) : dist;
-  const pos = focus.clone().addScaledVector(dir, d);
+  const pos = camPosTmp.copy(focus).addScaledVector(dir, d);
   if (pos.y < 1.5) pos.y = 1.5;
   camera.position.lerp(pos, 1 - Math.exp(-dt * 18));
   // aim point: far along view direction
-  const look = focus.clone().addScaledVector(dir, -200);
+  const look = camLookTmp.copy(focus).addScaledVector(dir, -200);
   look.y += h;
   camera.lookAt(look);
   audio.setListener(focus.x, focus.y, focus.z);
@@ -553,6 +596,8 @@ function frame() {
   const now = performance.now();
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   G.t += dt;
+  trackFps(dt);
+  G.frame = (G.frame || 0) + 1;
 
   if (G.mode === 'hangar' || G.mode === 'lobby') {
     if (previewRobot) {
@@ -598,7 +643,7 @@ function frame() {
     e.prevY = y;
     animateRobot(e.obj, e.animT, e.animSpeed, airborne);
     // spin mg barrels
-    for (const wm of e.obj.weaponMeshes) { if (!wm) continue; const sp = wm.getObjectByName('spin'); if (sp) { sp.userData.spin = Math.max(0, (sp.userData.spin || 0) - dt * 2); sp.rotation.z += sp.userData.spin * 30 * dt; } }
+    for (const wm of e.obj.weaponMeshes) { const sp = wm && wm.userData.spin; if (sp && sp.userData.spin > 0) { sp.userData.spin = Math.max(0, sp.userData.spin - dt * 2); sp.rotation.z += sp.userData.spin * 30 * dt; } }
     // stealth
     const st = !!r.st;
     if (st !== e.stealth) { e.stealth = st; e.obj.setStealth(st); }
@@ -633,14 +678,14 @@ function frame() {
   effects.update(dt);
   hud.updateDmg(dt);
 
-  // target info
-  if (G.target != null && G.entities.has(G.target) && G.alive) {
+  // target info (DOM writes throttled)
+  if (G.frame % 3 === 0) if (G.target != null && G.entities.has(G.target) && G.alive) {
     const te = G.entities.get(G.target); const me = G.entities.get(G.myId);
     hud.updateTarget({ name: te.name, r: te.srv }, me ? Math.hypot(te.pos.x - me.pos.x, te.pos.z - me.pos.z) : 0);
   } else hud.updateTarget(null, 0);
 
-  // minimap
-  if (G.state) { const me = G.entities.get(G.myId); hud.drawMinimap(G.state, G.myId, G.myTeam, me ? me.pos : null, G.camYaw); }
+  // minimap (canvas 2D redraw is not free — 10 Hz is plenty)
+  if (G.state && G.frame % 6 === 0) { const me = G.entities.get(G.myId); hud.drawMinimap(G.state, G.myId, G.myTeam, me ? me.pos : null, G.camYaw); }
 
   // beacon ring pulse
   if (world) world.beacons.forEach((b, i) => { b.ring.rotation.z = G.t * 0.3; });

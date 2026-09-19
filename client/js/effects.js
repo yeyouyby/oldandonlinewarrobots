@@ -1,6 +1,17 @@
 // Visual + audio effects
 import * as THREE from 'three';
 
+const MAX_FX = 220;
+
+function makeGlowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)'); grad.addColorStop(0.4, 'rgba(255,255,255,0.5)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
 const KIND_COLOR = {
   mg: 0xffe27a, cannon: 0xffb066, shotgun: 0xffc27a, beam: 0x66c8ff, flame: 0xff7a2a, lightning: 0xb0e0ff,
   plasma: 0x5ad0ff, rocket: 0xffa040, homing: 0xff6a3a, artillery: 0xffcc66,
@@ -13,7 +24,6 @@ export class Effects {
     this.projMeshes = new Map();
     this.tracerMat = {};
     this.sparkGeo = new THREE.SphereGeometry(0.35, 6, 4);
-    this.boomGeo = new THREE.SphereGeometry(1, 14, 10);
     this.projGeo = {
       plasma: new THREE.SphereGeometry(0.6, 8, 6),
       rocket: new THREE.CylinderGeometry(0.22, 0.32, 1.8, 6),
@@ -23,12 +33,30 @@ export class Effects {
     this.projMat = {};
     for (const k of Object.keys(this.projGeo)) this.projMat[k] = new THREE.MeshBasicMaterial({ color: KIND_COLOR[k] });
     this.smokeMat = new THREE.MeshBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.5, depthWrite: false });
+    this.debrisGeo = new THREE.BoxGeometry(1, 1, 1);
+    this.debrisMat = new THREE.MeshLambertMaterial({ color: 0x444a50 });
+    this.boomGeo = new THREE.SphereGeometry(1, 10, 7);
     this.audio = new Audio3();
   }
 
   add(obj, life, update) {
+    // hard cap on live effect objects: drop the oldest when the budget is exceeded
+    if (this.items.length >= MAX_FX) { const old = this.items.shift(); this.scene.remove(old.obj); }
     this.scene.add(obj);
     this.items.push({ obj, life, max: life, update });
+  }
+
+  // Muzzle-flash / explosion "light" without a real PointLight (adding/removing lights forces every
+  // material's shader to recompile → frame hitches). An additive sprite reads nearly the same.
+  glow(pos, color, size, life) {
+    const sp = new THREE.Sprite(this.glowMat(color));
+    sp.position.copy(pos); sp.scale.setScalar(size);
+    this.add(sp, life, (o, t) => { o.material.opacity = t * 0.8; o.scale.setScalar(size * (1.3 - t * 0.3)); });
+  }
+  glowMat(color) {
+    // one material per colour, cloned so opacity is independent per sprite
+    if (!this._glowTex) this._glowTex = makeGlowTexture();
+    return new THREE.SpriteMaterial({ map: this._glowTex, color, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false });
   }
 
   // straight tracer segment from a to b
@@ -60,8 +88,7 @@ export class Effects {
     const s = new THREE.Mesh(this.sparkGeo, new THREE.MeshBasicMaterial({ color: KIND_COLOR[kind] || 0xffffaa, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
     s.position.copy(pos); s.scale.setScalar(kind === 'cannon' || kind === 'rocket' ? 3.5 : 2);
     this.add(s, 0.06, (o, t) => { o.material.opacity = t; });
-    const l = new THREE.PointLight(KIND_COLOR[kind] || 0xffffaa, 30, 25, 2); l.position.copy(pos);
-    this.add(l, 0.06, (o, t) => { o.intensity = 30 * t; });
+    this.glow(pos, KIND_COLOR[kind] || 0xffffaa, kind === 'cannon' || kind === 'rocket' ? 9 : 5, 0.08);
   }
 
   sparks(pos, kind, count = 6) {
@@ -78,16 +105,15 @@ export class Effects {
     const m = new THREE.Mesh(this.boomGeo, new THREE.MeshBasicMaterial({ color: kind === 'plasma' ? 0x5ad0ff : 0xffa030, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
     m.position.copy(pos);
     this.add(m, 0.4, (o, t) => { o.scale.setScalar(r * (1.2 - t)); o.material.opacity = t * 0.85; });
-    const l = new THREE.PointLight(0xffa040, 80, r * 6, 2); l.position.copy(pos); l.position.y += 1;
-    this.add(l, 0.3, (o, t) => { o.intensity = 80 * t; });
+    this.glow(pos, kind === 'plasma' ? 0x5ad0ff : 0xffb060, r * 4, 0.3);
     // smoke
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       const sm = new THREE.Mesh(this.boomGeo, this.smokeMat.clone());
       sm.position.copy(pos).add(new THREE.Vector3((Math.random() - 0.5) * r, Math.random() * r * 0.5, (Math.random() - 0.5) * r));
       const rise = 3 + Math.random() * 3;
       this.add(sm, 1.2, (o, t, dt) => { o.position.y += rise * dt; o.scale.setScalar(r * 0.5 * (1.6 - t)); o.material.opacity = t * 0.4; });
     }
-    this.sparks(pos, kind, 8);
+    this.sparks(pos, kind, 5);
   }
 
   bigExplosion(pos) {
@@ -95,7 +121,7 @@ export class Effects {
     for (let i = 0; i < 4; i++) setTimeout(() => this.explosion(pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 8, Math.random() * 6, (Math.random() - 0.5) * 8)), 4 + Math.random() * 4, 'rocket'), i * 120 + 80);
     // debris
     for (let i = 0; i < 12; i++) {
-      const d = new THREE.Mesh(new THREE.BoxGeometry(0.6 + Math.random(), 0.6 + Math.random(), 0.6 + Math.random()), new THREE.MeshStandardMaterial({ color: 0x444a50 }));
+      const d = new THREE.Mesh(this.debrisGeo, this.debrisMat); d.scale.set(0.6 + Math.random(), 0.6 + Math.random(), 0.6 + Math.random());
       d.position.copy(pos); d.position.y += 3;
       const v = new THREE.Vector3((Math.random() - 0.5) * 30, 10 + Math.random() * 20, (Math.random() - 0.5) * 30);
       const rot = new THREE.Vector3(Math.random() * 6, Math.random() * 6, Math.random() * 6);
@@ -155,7 +181,7 @@ export class Effects {
       }
       if (m.userData.kind === 'rocket' || m.userData.kind === 'homing') {
         m.userData.smokeT += dt;
-        if (m.userData.smokeT > 0.04) {
+        if (m.userData.smokeT > 0.09) {
           m.userData.smokeT = 0;
           const sm = new THREE.Mesh(this.boomGeo, new THREE.MeshBasicMaterial({ color: 0x9a9a9a, transparent: true, opacity: 0.35, depthWrite: false }));
           sm.position.copy(m.position); sm.scale.setScalar(0.4);
@@ -171,8 +197,10 @@ export class Effects {
       it.life -= dt;
       if (it.life <= 0) {
         this.scene.remove(it.obj);
-        if (it.obj.geometry && it.obj.geometry !== this.sparkGeo && it.obj.geometry !== this.boomGeo) it.obj.geometry.dispose?.();
-        if (it.obj.material && it.obj.material !== this.smokeMat) it.obj.material.dispose?.();
+        const g = it.obj.geometry;
+        if (g && g !== this.sparkGeo && g !== this.boomGeo && g !== this.debrisGeo) g.dispose?.();
+        const mt = it.obj.material;
+        if (mt && mt !== this.smokeMat && mt !== this.debrisMat) mt.dispose?.();
         this.items.splice(i, 1);
         continue;
       }

@@ -2,6 +2,28 @@
 import * as THREE from 'three';
 import { MAP } from '/shared/map.js';
 import { mat } from './models.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+// Collect box geometries per material and merge them into one mesh each (one draw call per material).
+class Batcher {
+  constructor() { this.buckets = new Map(); }
+  box(w, h, d, x, y, z, material) {
+    const g = new THREE.BoxGeometry(w, h, d); g.translate(x, y, z);
+    if (!this.buckets.has(material)) this.buckets.set(material, []);
+    this.buckets.get(material).push(g);
+  }
+  flush(parent, { castShadow = true, receiveShadow = true } = {}) {
+    for (const [material, geos] of this.buckets) {
+      const merged = mergeGeometries(geos, false);
+      geos.forEach(g => g.dispose());
+      const m = new THREE.Mesh(merged, material);
+      m.castShadow = castShadow; m.receiveShadow = receiveShadow;
+      m.matrixAutoUpdate = false;
+      parent.add(m);
+    }
+    this.buckets.clear();
+  }
+}
 
 export function buildWorld(scene) {
   const world = new THREE.Group();
@@ -15,10 +37,11 @@ export function buildWorld(scene) {
   world.add(ground);
 
   // road stripes
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(MAP.halfW * 2, 40), new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 1 }));
-  road.rotation.x = -Math.PI / 2; road.position.y = 0.02; world.add(road);
-  const road2 = new THREE.Mesh(new THREE.PlaneGeometry(40, MAP.halfD * 2), new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 1 }));
-  road2.rotation.x = -Math.PI / 2; road2.position.y = 0.02; world.add(road2);
+  const roadMat = new THREE.MeshLambertMaterial({ color: 0x2a2d31 });
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(MAP.halfW * 2, 40), roadMat);
+  road.rotation.x = -Math.PI / 2; road.position.y = 0.02; road.receiveShadow = true; world.add(road);
+  const road2 = new THREE.Mesh(new THREE.PlaneGeometry(40, MAP.halfD * 2), roadMat);
+  road2.rotation.x = -Math.PI / 2; road2.position.y = 0.02; road2.receiveShadow = true; world.add(road2);
 
   // outer walls
   const wallMat = mat(0x3a4046, { roughness: 0.9 });
@@ -27,7 +50,8 @@ export function buildWorld(scene) {
     [-MAP.halfW - T / 2, 0, T, MAP.halfD * 2 + T * 2], [MAP.halfW + T / 2, 0, T, MAP.halfD * 2 + T * 2],
     [0, -MAP.halfD - T / 2, MAP.halfW * 2 + T * 2, T], [0, MAP.halfD + T / 2, MAP.halfW * 2 + T * 2, T],
   ];
-  for (const [x, z, w, d] of walls) { const m = new THREE.Mesh(new THREE.BoxGeometry(w, H, d), wallMat); m.position.set(x, H / 2, z); m.receiveShadow = true; world.add(m); }
+  const batch = new Batcher();
+  for (const [x, z, w, d] of walls) batch.box(w, H, d, x, H / 2, z, wallMat);
 
   // buildings
   const kindMat = {
@@ -37,39 +61,41 @@ export function buildWorld(scene) {
     crate: mat(0x7a5a2e, { roughness: 0.9 }),
   };
   const winMat = mat(0x0c141c, { emissive: 0x2c4a66, emissiveIntensity: 0.4, roughness: 0.3, metalness: 0.5 });
+  const stripeMat = mat(0xd8b23a);
   for (const b of MAP.boxes) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(b.w, b.h, b.d), kindMat[b.kind] || kindMat.bldg);
-    m.position.set(b.x, b.h / 2, b.z); m.castShadow = true; m.receiveShadow = true;
-    world.add(m);
+    batch.box(b.w, b.h, b.d, b.x, b.h / 2, b.z, kindMat[b.kind] || kindMat.bldg);
     if (b.kind === 'bldg' || b.kind === 'tower') {
       // window strips
       const rows = Math.max(1, Math.floor(b.h / 5));
       for (let r = 0; r < rows; r++) {
         const y = 3 + r * 5;
         if (y > b.h - 1.5) break;
-        const s1 = new THREE.Mesh(new THREE.BoxGeometry(b.w * 0.8, 1.4, 0.2), winMat); s1.position.set(b.x, y, b.z + b.d / 2 + 0.05); world.add(s1);
-        const s2 = s1.clone(); s2.position.z = b.z - b.d / 2 - 0.05; world.add(s2);
-        const s3 = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.4, b.d * 0.8), winMat); s3.position.set(b.x + b.w / 2 + 0.05, y, b.z); world.add(s3);
-        const s4 = s3.clone(); s4.position.x = b.x - b.w / 2 - 0.05; world.add(s4);
+        batch.box(b.w * 0.8, 1.4, 0.2, b.x, y, b.z + b.d / 2 + 0.05, winMat);
+        batch.box(b.w * 0.8, 1.4, 0.2, b.x, y, b.z - b.d / 2 - 0.05, winMat);
+        batch.box(0.2, 1.4, b.d * 0.8, b.x + b.w / 2 + 0.05, y, b.z, winMat);
+        batch.box(0.2, 1.4, b.d * 0.8, b.x - b.w / 2 - 0.05, y, b.z, winMat);
       }
       // roof detail
-      const roof = new THREE.Mesh(new THREE.BoxGeometry(b.w * 0.4, 1.5, b.d * 0.4), kindMat.tower); roof.position.set(b.x + b.w * 0.15, b.h + 0.75, b.z - b.d * 0.15); world.add(roof);
+      batch.box(b.w * 0.4, 1.5, b.d * 0.4, b.x + b.w * 0.15, b.h + 0.75, b.z - b.d * 0.15, kindMat.tower);
     }
-    if (b.kind === 'crate') {
-      const stripe = new THREE.Mesh(new THREE.BoxGeometry(b.w * 1.01, b.h * 0.15, b.d * 1.01), mat(0xd8b23a)); stripe.position.set(b.x, b.h * 0.5, b.z); world.add(stripe);
-    }
+    if (b.kind === 'crate') batch.box(b.w * 1.01, b.h * 0.15, b.d * 1.01, b.x, b.h * 0.5, b.z, stripeMat);
   }
+  batch.flush(world);
 
-  // beacons
+  // beacons (shared geometries)
+  const beaconGeo = {
+    base: new THREE.CylinderGeometry(4, 4.5, 0.8, 12), pole: new THREE.CylinderGeometry(0.35, 0.35, 12, 6),
+    ring: new THREE.RingGeometry(20, 22, 32), beam: new THREE.CylinderGeometry(1.2, 1.2, 60, 8, 1, true),
+  };
   const beaconObjs = MAP.beacons.map(b => {
     const g = new THREE.Group(); g.position.set(b.x, 0, b.z);
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(4, 4.5, 0.8, 16), mat(0x333940, { metalness: 0.4 })); base.position.y = 0.4; g.add(base);
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 12, 8), mat(0x9aa4ad, { metalness: 0.6 })); pole.position.y = 6.4; g.add(pole);
+    const base = new THREE.Mesh(beaconGeo.base, mat(0x333940, { metalness: 0.4 })); base.position.y = 0.4; g.add(base);
+    const pole = new THREE.Mesh(beaconGeo.pole, mat(0x9aa4ad, { metalness: 0.6 })); pole.position.y = 6.4; g.add(pole);
     const flagMat = new THREE.MeshBasicMaterial({ color: 0xbbbbbb, side: THREE.DoubleSide });
     const flag = new THREE.Mesh(new THREE.PlaneGeometry(5, 3), flagMat); flag.position.set(2.5, 11, 0); g.add(flag);
     const ringMat = new THREE.MeshBasicMaterial({ color: 0xbbbbbb, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
-    const ring = new THREE.Mesh(new THREE.RingGeometry(20, 22, 48), ringMat); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.1; g.add(ring);
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 60, 12, 1, true), new THREE.MeshBasicMaterial({ color: 0xbbbbbb, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })); beam.position.y = 30; g.add(beam);
+    const ring = new THREE.Mesh(beaconGeo.ring, ringMat); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.1; g.add(ring);
+    const beam = new THREE.Mesh(beaconGeo.beam, new THREE.MeshBasicMaterial({ color: 0xbbbbbb, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })); beam.position.y = 30; g.add(beam);
     // label sprite
     const label = makeLabel(b.name); label.position.y = 16; label.scale.set(8, 4, 1); g.add(label);
     world.add(g);
@@ -78,15 +104,16 @@ export function buildWorld(scene) {
 
   // sky-ish: distant silhouettes
   const farMat = mat(0x1b2129, { roughness: 1 });
+  const far = new Batcher();
   for (let i = 0; i < 40; i++) {
     const ang = i / 40 * Math.PI * 2;
     const rad = 520 + Math.random() * 120;
     const h = 30 + Math.random() * 90;
-    const m = new THREE.Mesh(new THREE.BoxGeometry(30 + Math.random() * 50, h, 30 + Math.random() * 50), farMat);
-    m.position.set(Math.cos(ang) * rad, h / 2, Math.sin(ang) * rad);
-    world.add(m);
+    far.box(30 + Math.random() * 50, h, 30 + Math.random() * 50, Math.cos(ang) * rad, h / 2, Math.sin(ang) * rad, farMat);
   }
+  far.flush(world, { castShadow: false, receiveShadow: false });
 
+  world.traverse(o => { if (o !== world && !o.isSprite) { o.updateMatrix(); } });
   return { group: world, beacons: beaconObjs };
 }
 
